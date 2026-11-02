@@ -1,0 +1,20 @@
+{
+  "name": "split",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev:api": "npm run dev -w @split/api",
+    "build:api": "npm run build -w @split/api",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down",
+    "db:migrate": "npm run db:migrate -w @split/api",
+    "db:studio": "npm run db:studio -w @split/api",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}

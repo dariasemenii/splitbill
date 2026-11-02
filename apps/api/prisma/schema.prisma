@@ -1,0 +1,350 @@
+// Схема БД для застосунку розподілу витрат у групах
+// Усі суми зберігаються в цілих числах у мінімальних одиницях валюти (копійки, центи).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// URL підключення задається в prisma.config.ts
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────── Enums ───────────────
+
+enum AuthProvider {
+  GOOGLE
+  APPLE
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum SplitType {
+  EQUAL      // порівну
+  EXACT      // точні суми
+  PERCENTAGE // відсотки
+  SHARES     // частки (напр. 2:1:1)
+  ITEMIZED   // за позиціями чека
+}
+
+enum SettlementStatus {
+  PENDING   // боржник позначив, що заплатив
+  CONFIRMED // отримувач підтвердив
+  REJECTED
+}
+
+enum PaymentMethodType {
+  CARD
+  IBAN
+  LINK // напр. посилання на банку або платіжне посилання
+}
+
+enum Platform {
+  IOS
+  ANDROID
+}
+
+enum ReceiptStatus {
+  UPLOADED
+  PROCESSING
+  PARSED
+  FAILED
+}
+
+// ─────────────── Користувачі ───────────────
+
+model User {
+  id              String   @id @default(uuid()) @db.Uuid
+  email           String   @unique
+  name            String?  // null, поки користувач не пройшов онбординг
+  avatarUrl       String?
+  defaultCurrency String   @default("UAH") @db.Char(3)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  identities     AuthIdentity[]
+  refreshTokens  RefreshToken[]
+  memberships    GroupMember[]
+  paymentMethods PaymentMethod[]
+  pushTokens     PushToken[]
+  createdGroups  Group[]         @relation("GroupCreator")
+}
+
+// ─────────────── Авторизація ───────────────
+
+// Прив'язка до Google / Apple акаунта
+model AuthIdentity {
+  id             String       @id @default(uuid()) @db.Uuid
+  userId         String       @db.Uuid
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider       AuthProvider
+  providerUserId String       // поле sub з ID-токена
+  email          String?
+  createdAt      DateTime     @default(now())
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+}
+
+// Одноразові коди для входу через email. Зберігаємо лише хеш коду.
+model EmailOtp {
+  id         String    @id @default(uuid()) @db.Uuid
+  email      String
+  codeHash   String
+  expiresAt  DateTime
+  attempts   Int       @default(0)
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([email, createdAt])
+}
+
+// Refresh-токени з ротацією. Зберігаємо лише хеш, сам токен живе в SecureStore на телефоні.
+model RefreshToken {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @db.Uuid
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash    String    @unique
+  deviceName   String?
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?   @db.Uuid
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ─────────────── Групи та учасники ───────────────
+
+model Group {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String
+  currency    String    @default("UAH") @db.Char(3)
+  createdById String    @db.Uuid
+  createdBy   User      @relation("GroupCreator", fields: [createdById], references: [id])
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  members     GroupMember[]
+  invites     GroupInvite[]
+  expenses    Expense[]
+  settlements Settlement[]
+  reminders   PaymentReminder[]
+  receipts    Receipt[]
+}
+
+// Учасник групи. userId може бути null: це «заглушка» для друга,
+// який ще не зареєструвався. Коли він приєднається, просто проставляємо userId.
+// Усі фінансові записи посилаються на GroupMember, а не на User.
+model GroupMember {
+  id          String     @id @default(uuid()) @db.Uuid
+  groupId     String     @db.Uuid
+  group       Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId      String?    @db.Uuid
+  user        User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  displayName String
+  role        MemberRole @default(MEMBER)
+  joinedAt    DateTime   @default(now())
+  leftAt      DateTime?
+
+  createdExpenses     Expense[]          @relation("ExpenseCreator")
+  payments            ExpensePayer[]
+  shares              ExpenseShare[]
+  settlementsSent     Settlement[]       @relation("SettlementFrom")
+  settlementsReceived Settlement[]       @relation("SettlementTo")
+  remindersSent       PaymentReminder[]  @relation("ReminderFrom")
+  remindersReceived   PaymentReminder[]  @relation("ReminderTo")
+  receiptItemShares   ReceiptItemShare[]
+
+  @@unique([groupId, userId])
+  @@index([userId])
+}
+
+model GroupInvite {
+  id         String    @id @default(uuid()) @db.Uuid
+  groupId    String    @db.Uuid
+  group      Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  token      String    @unique
+  expiresAt  DateTime?
+  maxUses    Int?
+  usesCount  Int       @default(0)
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+// ─────────────── Витрати ───────────────
+
+model Expense {
+  id                String      @id @default(uuid()) @db.Uuid
+  groupId           String      @db.Uuid
+  group             Group       @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  title             String
+  amount            Int         // загальна сума в мінімальних одиницях
+  currency          String      @db.Char(3)
+  splitType         SplitType   @default(EQUAL)
+  category          String?
+  note              String?
+  spentAt           DateTime    @default(now())
+  createdByMemberId String      @db.Uuid
+  createdBy         GroupMember @relation("ExpenseCreator", fields: [createdByMemberId], references: [id])
+  receiptId         String?     @unique @db.Uuid
+  receipt           Receipt?    @relation(fields: [receiptId], references: [id])
+  deletedAt         DateTime?   // м'яке видалення, щоб не ламати історію
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  payers ExpensePayer[]
+  shares ExpenseShare[]
+
+  @@index([groupId, spentAt])
+}
+
+// Хто скільки заплатив. Зазвичай один рядок, але підтримується кілька платників.
+// Інваріант: sum(payers.amount) == expense.amount
+model ExpensePayer {
+  id        String      @id @default(uuid()) @db.Uuid
+  expenseId String      @db.Uuid
+  expense   Expense     @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  memberId  String      @db.Uuid
+  member    GroupMember @relation(fields: [memberId], references: [id])
+  amount    Int
+
+  @@unique([expenseId, memberId])
+  @@index([memberId])
+}
+
+// Хто скільки винен за витрату. amount завжди вже пораховано,
+// shareValue зберігає вихідне значення (відсоток або кількість часток) для редагування.
+// Інваріант: sum(shares.amount) == expense.amount
+model ExpenseShare {
+  id         String      @id @default(uuid()) @db.Uuid
+  expenseId  String      @db.Uuid
+  expense    Expense     @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  memberId   String      @db.Uuid
+  member     GroupMember @relation(fields: [memberId], references: [id])
+  amount     Int
+  shareValue Decimal?    @db.Decimal(10, 4)
+
+  @@unique([expenseId, memberId])
+  @@index([memberId])
+}
+
+// ─────────────── Погашення боргів ───────────────
+
+model Settlement {
+  id           String           @id @default(uuid()) @db.Uuid
+  groupId      String           @db.Uuid
+  group        Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  fromMemberId String           @db.Uuid // хто віддав гроші
+  from         GroupMember      @relation("SettlementFrom", fields: [fromMemberId], references: [id])
+  toMemberId   String           @db.Uuid // хто отримав
+  to           GroupMember      @relation("SettlementTo", fields: [toMemberId], references: [id])
+  amount       Int
+  currency     String           @db.Char(3)
+  status       SettlementStatus @default(PENDING)
+  note         String?
+  settledAt    DateTime         @default(now())
+  confirmedAt  DateTime?
+  deletedAt    DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([groupId])
+}
+
+// ─────────────── Реквізити та сповіщення ───────────────
+
+model PaymentMethod {
+  id        String            @id @default(uuid()) @db.Uuid
+  userId    String            @db.Uuid
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      PaymentMethodType
+  label     String?           // напр. «Моно чорна»
+  value     String            // номер картки / IBAN / URL; шифрувати на рівні застосунку
+  isDefault Boolean           @default(false)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  reminders PaymentReminder[]
+
+  @@index([userId])
+}
+
+// Expo push token. Один користувач може мати кілька пристроїв.
+model PushToken {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @db.Uuid
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token      String   @unique
+  platform   Platform
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Історія нагадувань: потрібна для лімітів (щоб не спамити) і для екрана «вам нагадали».
+model PaymentReminder {
+  id              String         @id @default(uuid()) @db.Uuid
+  groupId         String         @db.Uuid
+  group           Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  fromMemberId    String         @db.Uuid // кредитор
+  from            GroupMember    @relation("ReminderFrom", fields: [fromMemberId], references: [id])
+  toMemberId      String         @db.Uuid // боржник
+  to              GroupMember    @relation("ReminderTo", fields: [toMemberId], references: [id])
+  amount          Int
+  currency        String         @db.Char(3)
+  paymentMethodId String?        @db.Uuid
+  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
+  sentAt          DateTime       @default(now())
+  readAt          DateTime?
+
+  @@index([toMemberId, sentAt])
+  @@index([groupId])
+}
+
+// ─────────────── Чеки (наступний етап) ───────────────
+
+model Receipt {
+  id        String        @id @default(uuid()) @db.Uuid
+  groupId   String        @db.Uuid
+  group     Group         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  imageUrl  String
+  status    ReceiptStatus @default(UPLOADED)
+  merchant  String?
+  total     Int?
+  currency  String?       @db.Char(3)
+  rawData   Json?         // сирий результат розпізнавання
+  createdAt DateTime      @default(now())
+
+  expense Expense?
+  items   ReceiptItem[]
+}
+
+model ReceiptItem {
+  id         String  @id @default(uuid()) @db.Uuid
+  receiptId  String  @db.Uuid
+  receipt    Receipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  name       String
+  quantity   Decimal @default(1) @db.Decimal(10, 3)
+  totalPrice Int
+
+  shares ReceiptItemShare[]
+}
+
+// Хто ділить позицію чека. Позиція ділиться порівну між усіма, хто тут вказаний.
+model ReceiptItemShare {
+  id       String      @id @default(uuid()) @db.Uuid
+  itemId   String      @db.Uuid
+  item     ReceiptItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  memberId String      @db.Uuid
+  member   GroupMember @relation(fields: [memberId], references: [id])
+
+  @@unique([itemId, memberId])
+}
