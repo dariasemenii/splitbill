@@ -4,12 +4,20 @@
 
 ## Структура
 - `apps/api` — бекенд: Next.js 16 (лише route handlers), Prisma 7, PostgreSQL
-- `apps/mobile` — (буде) Expo / React Native
+- `apps/mobile` — Expo SDK 58, React Native, Expo Router (маршрути в `src/app`)
+- `packages/shared` — Zod-схеми запитів і типи відповідей API для обох застосунків
+
+У кожному застосунку є AGENTS.md від Next.js та Expo: ці фреймворки змінюються швидко,
+тому перед роботою з їхніми API звіряйтеся з документацією відповідної версії.
 
 ## Правила
 - Гроші завжди цілі числа в мінімальних одиницях (копійки). Ніякого float.
 - Фінансові записи посилаються на `GroupMember`, не на `User`.
 - Для кожної витрати: sum(payers.amount) == sum(shares.amount) == expense.amount.
+- Нова форма запиту чи відповіді спершу описується в `packages/shared`, потім використовується в обох застосунках.
+- Мобільний клієнт ходить в API лише через `api()` з `apps/mobile/src/lib/api.ts` (він оновлює токени).
+- Нативні пакети в мобільний застосунок ставити через `npx expo install`, не через npm.
 - Валідація вхідних даних через Zod, помилки через `HttpError` і обгортку `route()`.
 - Захищені ендпоінти отримують користувача через `requireUserId(req)`.
 - Після зміни `prisma/schema.prisma`: `npm run db:migrate` (створює міграцію і генерує клієнт).
+- Перевірка перед комітом: `npm run typecheck && npm run lint` з кореня.

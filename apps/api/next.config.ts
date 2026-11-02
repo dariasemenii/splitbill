@@ -1,9 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
+  // Спільний пакет монорепозиторію постачається як TypeScript-код
+  transpilePackages: ["@split/shared"],
 };
 
 export default nextConfig;

@@ -1,12 +1,10 @@
-import { z } from "zod";
+import { RefreshBody } from "@split/shared";
 import { json, parseBody, route } from "@/lib/http";
 import { revokeRefreshToken } from "@/lib/auth/tokens";
 
-const Body = z.object({ refreshToken: z.string().min(1) });
-
 // POST /api/auth/logout  { refreshToken }
 export const POST = route(async (req) => {
-  const { refreshToken } = await parseBody(req, Body);
+  const { refreshToken } = await parseBody(req, RefreshBody);
   await revokeRefreshToken(refreshToken);
   return json({ ok: true });
 });

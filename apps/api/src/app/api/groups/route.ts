@@ -1,8 +1,7 @@
-import { z } from "zod";
+import { CreateGroupBody } from "@split/shared";
 import { HttpError, json, parseBody, route } from "@/lib/http";
 import { prisma } from "@/lib/prisma";
 import { requireUserId } from "@/lib/auth/session";
-import { currencySchema, personNameSchema } from "@/lib/validation";
 
 // GET /api/groups  — групи, де користувач є активним учасником
 export const GET = route(async (req) => {
@@ -41,19 +40,10 @@ export const GET = route(async (req) => {
   });
 });
 
-const CreateBody = z.object({
-  name: z.string().trim().min(1).max(100),
-  currency: currencySchema.default("UAH"),
-  // Як мене показувати в цій групі; за замовчуванням ім'я з профілю
-  displayName: personNameSchema.optional(),
-  // Друзі, яких додаємо одразу за іменем (ще без акаунта)
-  members: z.array(personNameSchema).max(50).default([]),
-});
-
 // POST /api/groups  { name, currency?, displayName?, members? }
 export const POST = route(async (req) => {
   const userId = await requireUserId(req);
-  const body = await parseBody(req, CreateBody);
+  const body = await parseBody(req, CreateGroupBody);
 
   const user = await prisma.user.findUnique({
     where: { id: userId },

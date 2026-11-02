@@ -2,13 +2,17 @@
   "name": "split",
   "private": true,
   "workspaces": [
-    "apps/*"
+    "apps/*",
+    "packages/*"
   ],
   "engines": {
     "node": ">=20.19"
   },
   "scripts": {
     "dev:api": "npm run dev -w @split/api",
+    "dev:mobile": "npm run start -w @split/mobile",
+    "ios": "npm run ios -w @split/mobile",
+    "android": "npm run android -w @split/mobile",
     "build:api": "npm run build -w @split/api",
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down",
